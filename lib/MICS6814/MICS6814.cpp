@@ -22,6 +22,8 @@ void saveBaseResistancesToEEPROM() {
     EEPROM.put(EEPROM_NH3_BASE_ADDR, NH3baseR);
     EEPROM.put(EEPROM_RED_BASE_ADDR, REDbaseR);
     EEPROM.put(EEPROM_OX_BASE_ADDR, OXbaseR);
+    uint8_t flag = CALIBRATION_FLAG_VALUE;
+    EEPROM.put(EEPROM_CALIBRATION_FLAG_ADDR, flag);
     EEPROM.commit();
 }
 
@@ -61,7 +63,7 @@ void calibrateMICS() {
   // (Keeps smaller than 64 to prevent overflows)
   uint8_t seconds = 10;
   // Allowed delta for the average from the current value
-  uint8_t delta = 4;
+  uint8_t delta = 2;
 
   // Circular buffer for the measurements
   uint16_t bufferNH3[seconds];
@@ -137,7 +139,7 @@ void calibrateMICS() {
     OXstable = abs(fltSumOX / seconds - curOX) < delta;
 
     // Advance buffer pointer
-    pntrNH3 = (pntrNH3 + 1) % seconds ;
+    pntrNH3 = (pntrNH3 + 1) % seconds;
     pntrRED = (pntrRED + 1) % seconds;
     pntrOX = (pntrOX + 1) % seconds;
 
@@ -149,17 +151,24 @@ void calibrateMICS() {
     }
     if(!REDstable) {
       Serial.print("(RED:");
-      Serial.print(abs(fltSumNH3 / seconds - curRED));
+      Serial.print(abs(fltSumRED / seconds - curRED));
       Serial.print(")");
     }
     if(!OXstable) {
       Serial.print("(OX:");
-      Serial.print(abs(fltSumNH3 / seconds - curOX));
+      Serial.print(abs(fltSumOX / seconds - curOX));
       Serial.print(")");
     }
 
   } while (!NH3stable || !REDstable || !OXstable);
-
+  Serial.print("fltSumNH3: ");
+  Serial.println(fltSumNH3);
+  Serial.print("fltSumRED: ");
+  Serial.println(fltSumRED);
+  Serial.print("fltSumOX: ");
+  Serial.println(fltSumOX);
+  Serial.print("seconds: ");
+  Serial.println(seconds);
   NH3baseR = fltSumNH3 / seconds;
   REDbaseR = fltSumRED / seconds;
   OXbaseR = fltSumOX / seconds;
@@ -267,10 +276,10 @@ void calibrateMICSV2(){
 }
 
 void calibrateMICSV3() {
-    if (isCalibrated()) {
-        Serial.println("Sensor already calibrated. Skipping calibration.");
-        return;
-    }
+  if (isCalibrated()) {
+    Serial.println("Sensor already calibrated. Skipping calibration.");
+    return;
+  }
   uint8_t seconds = 10;
   uint8_t delta = 3; // Adjust delta based on your ADC range and requirements
 
@@ -364,8 +373,8 @@ void calibrateMICSV3() {
 }
 
 uint16_t getResistance(channel_t channel) {
-      unsigned long rs = 0;
-      int counter = 0;
+  unsigned long rs = 0;
+  int counter = 0;
 
   switch (channel) {
     case CH_NH3:
@@ -436,7 +445,7 @@ float measureMICS(gas_t gas) {
   float ratio;
   float c = 0; //ppm
   
-  switch (gas) {
+   switch (gas) {
     case CO:
       ratio = getCurrentRatio(CH_RED);
       c = pow(ratio, -1.179) * 4.385;

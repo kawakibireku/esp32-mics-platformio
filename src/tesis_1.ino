@@ -47,7 +47,7 @@ void reconnectMQTT() {
    while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect("ESP32Client", mqtt_username, mqtt_password)) {
+    if (client.connect(MQTT_CLIENT_ID, mqtt_username, mqtt_password)) {
       Serial.println("connected");
       // Once connected, publish an announcement...
       // client.publish("outTopic", "hello world");
@@ -64,6 +64,8 @@ void reconnectMQTT() {
 }
 
 void monitorMICS() {
+  static unsigned long lastPublishTime = 0;
+  unsigned long currentTime = millis();
   float COval, NO2val;
   COval = ppmToUgM3(CO);
   NO2val = ppmToUgM3(NO2);
@@ -96,8 +98,18 @@ void monitorMICS() {
   Serial.print("NO2 (ug/m3): ");
   Serial.println(ppmToUgM3(NO2));
   Serial.println("----------------------");
-
-
+  if(currentTime - lastPublishTime >= 10000) {
+    char payload[256];
+    snprintf(payload, sizeof(payload), "emission,device_id=%s CO=%.2f,NO2=%.2f", DEVICE_NAME, COval, NO2val);
+    Serial.println("Publishing to MQTT...");
+    Serial.println(payload);
+    if (client.publish("egcs/egc-1", payload)) {
+      Serial.println("Publish successful");
+    } else {
+      Serial.println("Publish failed");
+    }
+  }
+  lastPublishTime = currentTime;
   if(mode == 2) {
     display.clearDisplay();
     display.setTextSize(1);
@@ -120,19 +132,14 @@ void monitorMICS() {
     display.display();
   }
 
-  if(COval >= 15000) {
-    // Blynk.logEvent("high_co");
-  }
-  if(NO2val >= 1130){
-    // Blynk.logEvent("high_no2");
-  }
 }
 
 void monitorCSS811() {
+  static unsigned long lastPublishTime = 0;
+  unsigned long currentTime = millis();
   float CO2val, TVOCval;
-    if(ccs.available()){
+  if(ccs.available()){
       if(!ccs.readData()){
-        // Serial.print("TEMPERATURE: ");
         CO2val = ccs.geteCO2();
         TVOCval = ccs.getTVOC();
         Serial.println("----------------------");
@@ -145,36 +152,45 @@ void monitorCSS811() {
         Serial.println(" ppb");
         Serial.println("----------------------");
 
-        if(CO2val >= 1500) {
-          // Blynk.logEvent("high_co2");
+        if(currentTime - lastPublishTime >= 10000) {
+          // Publish to MQTT
+          char payload[256];
+          snprintf(payload, sizeof(payload), "emission,device_id=%s CO2=%.2f,TVOC=%.2f", DEVICE_NAME, CO2val, TVOCval);
+          if (client.publish("egcs/egc-1", payload)) {
+            Serial.println("Publish successful");
+          } else {
+            Serial.println("Publish failed");
+          }
         }
-       if(mode == 1) {
-         display.clearDisplay();
-        display.setTextSize(1);
-        display.setCursor(20, 0);
-        display.print("Air Quality");
 
-        display.setTextSize(2);
-        display.setCursor(0, 20);
-        display.print("CO2: ");
-        display.print(CO2val);
-        display.setTextSize(1);
-        display.print(" ppm");
+        if(mode == 1) {
+          display.clearDisplay();
+          display.setTextSize(1);
+          display.setCursor(20, 0);
+          display.print("Air Quality");
 
+          display.setTextSize(2);
+          display.setCursor(0, 20);
+          display.print("CO2: ");
+          display.print(CO2val);
+          display.setTextSize(1);
+          display.print(" ppm");
+
+          display.setTextSize(2);
+          display.setCursor(0, 45);
+          display.print("TVOC: ");
+          display.print(TVOCval);
+          display.display();
+        }
+        lastPublishTime = currentTime;
+        } else {
+        Serial.println("ERROR!");
+        display.clearDisplay();
         display.setTextSize(2);
-        display.setCursor(0, 45);
-        display.print("TVOC: ");
-        display.print(TVOCval);
+        display.setCursor(0, 5);
+        display.print("ERROR!");
         display.display();
-       }
-      } else {
-      Serial.println("ERROR!");
-      display.clearDisplay();
-      display.setTextSize(2);
-      display.setCursor(0, 5);
-      display.print("ERROR!");
-      display.display();
-      while (1);
+        while (1);
     }
   }
 }
@@ -183,6 +199,8 @@ void setup() {
   Serial.begin(115200);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Initialize with the I2C addr 0x3C (128x64)
   delay(500);
+
+  // analogReadResolution(10);
 
   // Clear display and set initial text properties
   display.clearDisplay();
@@ -221,7 +239,7 @@ void setup() {
   display.print("Initializing MICS6814...");
   display.display();
   initMICS(NH3PIN, COPIN, OXPIN, MICS_CALIBRATION_SECONDS, MICS_CALIBRATION_DELTA);
-  calibrateMICSV2();
+  calibrateMICS();
   display.setCursor(0, 50);
   display.print("MICS6814 initialized!");
   display.display();
@@ -259,6 +277,7 @@ void setup() {
 void loop() {
   static unsigned long buttonPressStartTime = 0;
   static bool buttonPressed = false;
+  static unsigned long lastPublishTime = 0;
 
   int buttonState = digitalRead(BUTTON_PIN);
   if (buttonState == LOW) {
@@ -274,6 +293,11 @@ void loop() {
   } else {
     buttonPressed = false;
   }
+  if(!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+
   monitorMICS();
   monitorCSS811();
   delay(1000);
