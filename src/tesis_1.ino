@@ -98,6 +98,8 @@ void monitorMICS() {
   Serial.print("NO2 (ug/m3): ");
   Serial.println(ppmToUgM3(NO2));
   Serial.println("----------------------");
+  Serial.println(currentTime);
+  Serial.println(lastPublishTime);
   if(currentTime - lastPublishTime >= 10000) {
     char payload[256];
     snprintf(payload, sizeof(payload), "emission,device_id=%s CO=%.2f,NO2=%.2f", DEVICE_NAME, COval, NO2val);
@@ -105,11 +107,12 @@ void monitorMICS() {
     Serial.println(payload);
     if (client.publish("egcs/egc-1", payload)) {
       Serial.println("Publish successful");
+      lastPublishTime = currentTime;
     } else {
       Serial.println("Publish failed");
     }
   }
-  lastPublishTime = currentTime;
+
   if(mode == 2) {
     display.clearDisplay();
     display.setTextSize(1);
@@ -158,6 +161,7 @@ void monitorCSS811() {
           snprintf(payload, sizeof(payload), "emission,device_id=%s CO2=%.2f,TVOC=%.2f", DEVICE_NAME, CO2val, TVOCval);
           if (client.publish("egcs/egc-1", payload)) {
             Serial.println("Publish successful");
+            lastPublishTime = currentTime;
           } else {
             Serial.println("Publish failed");
           }
@@ -182,7 +186,7 @@ void monitorCSS811() {
           display.print(TVOCval);
           display.display();
         }
-        lastPublishTime = currentTime;
+    
         } else {
         Serial.println("ERROR!");
         display.clearDisplay();
