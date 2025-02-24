@@ -492,11 +492,11 @@ float ppmToUgM3(gas_t gas) {
   switch (gas) {
     case CO:
       ppm = measureMICS(CO);
-      ugm3 = ppm * 28.01 * conversionFactor;
+      ugm3 = ppm * (28.01 / 24.45); 
       break;
     case NO2:
       ppm = measureMICS(NO2);
-      ugm3 = ppm * 46.01 * conversionFactor;
+      ugm3 = ppm * (46.01 / 24.45);
       break;
     case NH3:
       ppm = measureMICS(NH3);
