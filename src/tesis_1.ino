@@ -9,6 +9,7 @@
 #include <config.h>
 #include <MICS6814.h>
 #include <PubSubClient.h>
+#include "esp_wpa2.h"
 
 Adafruit_CCS811 ccs;
 Adafruit_SSD1306 display(SSD_SCREEN_WIDTH, SSD_SCREEN_HEIGHT, &Wire, SSD_OLED_RESET);
@@ -17,6 +18,8 @@ const char* mqtt_username = MQTT_USER;
 const char* mqtt_password = MQTT_PASS;
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASS;
+const char* identity = WIFI_IDENTITY;
+
 int mode = 1;
 
 WiFiClient espClient;
@@ -24,7 +27,22 @@ PubSubClient client(espClient);
 
 void connectToWiFi() {
   Serial.print("Connecting to WiFi...");
-  WiFi.begin(ssid, password);
+  // WiFi.disconnect(true);
+  // WiFi.mode(WIFI_STA);
+  // WiFi.begin(ssid, password); (WPA2 personal magic)
+  Serial.print("ESP32 MAC Address: ");
+  Serial.println(WiFi.macAddress());
+
+    WiFi.disconnect(true);      
+    // esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
+    // esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
+    // esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+    // esp_wifi_sta_wpa2_ent_enable();
+    // WPA2 enterprise magic ends here
+
+
+    WiFi.begin(ssid, WPA2_AUTH_PEAP, identity, identity, password); // WPA2 enterprise magic
+
 
   int maxAttempts = 10;
   int attempt = 0;
