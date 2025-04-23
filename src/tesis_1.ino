@@ -332,7 +332,7 @@ void monitorMICS() {
   Serial.println("----------------------");
   Serial.println(currentTime);
   Serial.println(lastPublishTime);
-  if(currentTime - lastPublishTime >= 10000) {
+  if(currentTime - lastPublishTime >= 60000) {
     char payload[256];
     snprintf(payload, sizeof(payload), "emission,device_id=%s CO=%.2f,NO2=%.2f", DEVICE_NAME, COval, NO2val);
     Serial.println("Publishing to MQTT...");
@@ -398,7 +398,7 @@ void monitorCSS811() {
         Serial.println(" ppb");
         Serial.println("----------------------");
 
-        if(currentTime - lastPublishTime >= 10000) {
+        if(currentTime - lastPublishTime >= 60000) {
           // Publish to MQTT
           char payload[256];
           snprintf(payload, sizeof(payload), "emission,device_id=%s CO2=%.2f,TVOC=%.2f", DEVICE_NAME, CO2val, TVOCval);
