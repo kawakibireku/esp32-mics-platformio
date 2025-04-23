@@ -30,6 +30,15 @@ const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASS;
 const char* identity = WIFI_IDENTITY;
 
+// Add these globals near your other global variables
+float lastCO2 = 0;
+float lastTVOC = 0;
+float lastCO = 0;
+float lastNO2 = 0;
+bool css811DataReady = false;
+bool mics6814DataReady = false;
+unsigned long lastCombinedDisplayUpdate = 0;
+
 int mode = 1;
 
 WiFiClient espClient;
@@ -302,43 +311,7 @@ void saveOfflineData(const char* payload) {
   // Report SPIFFS space usage after saving
   reportSPIFFSSpace();
 
-  // // Optionally display storage info on OLED temporarily
-  // static unsigned long lastDisplayTime = 0;
-  // if (millis() - lastDisplayTime > 5000) { // Only update display every 5 seconds to avoid flicker
-  //   lastDisplayTime = millis();
-    
-  //   // Save current display state
-  //   display.getTextBounds("", 0, 0, nullptr, nullptr, nullptr, nullptr); // Reset text bounds
-    
-  //   // Show storage info on a corner of the display
-  //   int origMode = mode;
-  //   display.clearDisplay();
-  //   display.setTextSize(1);
-  //   display.setCursor(0, 0);
-  //   display.print("Storage:");
-    
-  //   float usedPercent = 100.0 * SPIFFS.usedBytes() / SPIFFS.totalBytes();
-  //   display.setCursor(0, 10);
-  //   display.print("Used: ");
-  //   display.print(usedPercent, 1);
-  //   display.print("%");
-    
-  //   display.setCursor(0, 20);
-  //   display.print("Free: ");
-  //   display.print(SPIFFS.totalBytes() - SPIFFS.usedBytes());
-  //   display.print(" bytes");
-    
-  //   display.setCursor(0, 30);
-  //   display.print("Records: ");
-  //   display.print(countOfflineRecords());
-    
-  //   display.display();
-  //   delay(2000); // Show for 2 seconds
-    
-  //   // Restore display to previous state by forcing redraw
-  //   mode = origMode;
-  //   // The next sensor reading will restore the display
-  // }
+
 }
 
 // Count number of offline records
@@ -470,77 +443,137 @@ void reconnectWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi disconnected, trying to reconnect...");
     
-    // Display reconnection attempt
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("Reconnecting WiFi...");
-    display.display();
+    // Instead of clearing the whole display, just indicate reconnection attempt with a blinking WiFi status
+    // Save current mode to restore proper display later
+    int currentMode = mode;
+    bool blinkState = true;
     
     WiFi.disconnect(true);
-    // WiFi.begin(ssid, WPA2_AUTH_PEAP, identity, identity, password);
     WiFi.begin(ssid, password);
 
     int maxAttempts = 10;
     int attempt = 0;
+    
     while (WiFi.status() != WL_CONNECTED && attempt < maxAttempts) {
+      // Blink WiFi status indicator instead of clearing display
+      if (currentMode == 1 && css811DataReady && mics6814DataReady) {
+        // Keep the combined display but update just the WiFi status part
+        display.fillRect(31, 33, 20, 8, BLACK); // Clear just the WiFi status area
+        display.setCursor(31, 33);
+        
+        // Alternate between "..." and "   " for blinking effect
+        if (blinkState) {
+          display.print("...");
+        } else {
+          display.print("   ");
+        }
+        display.display();
+        blinkState = !blinkState;
+      } else if (currentMode == 3) {
+        // If in offline records view, don't change anything
+      } else {
+        // For other modes or if data isn't ready, show a small indicator
+        display.fillRect(0, 0, 8, 8, BLACK);
+        if (blinkState) {
+          display.fillRect(0, 0, 4, 4, WHITE);
+        }
+        display.display();
+        blinkState = !blinkState;
+      }
+      
       delay(1000);
       Serial.print(".");
       attempt++;
     }
     
+    // WiFi reconnection successful
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\nReconnected to WiFi!");
-      display.setCursor(0, 10);
-      display.print("WiFi reconnected!");
-      display.display();
-      delay(500);
       
-       // Always try to update time when WiFi reconnects
+      // Small visual indicator for successful reconnection
+      if (currentMode == 1 && css811DataReady && mics6814DataReady) {
+        display.fillRect(31, 33, 20, 8, BLACK);
+        display.setCursor(31, 33);
+        display.print("OK");
+        display.display();
+      }
+      
+      // Always try to update time when WiFi reconnects
       // This ensures we get accurate NTP time when available
-      Serial.println("WiFi reconnected, updating time...");
-      display.setCursor(0, 20);
-      display.print("Updating time...");
-      display.display();
-    // Store previous time initialization state
-      bool wasTimeInitialized = timeInitialized;
+      Serial.println("WiFi reconnected, updating time from NTP...");
       
-      // Try to get time from NTP
-      initTime();
-
-       // Show updated time status
-      display.setCursor(0, 30);
-      if (timeInitialized) {
-        if (!wasTimeInitialized) {
-          display.print("Time initialized!");
-        } else {
-          display.print("Time updated!");
-        }
+      // Reset NTP time sync
+      configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+      
+      // Wait for time to be set from NTP
+      time_t now = time(nullptr);
+      int timeAttempts = 0;
+      while (now < 8 * 3600 * 2 && timeAttempts < 5) {
+        Serial.print(".");
+        delay(500);
+        now = time(nullptr);
+        timeAttempts++;
+      }
+      
+      if (now > 8 * 3600 * 2) {
+        Serial.println("\nTime updated from NTP after reconnection!");
+        timeInitialized = true;
         
-        // Show current time
+        struct tm timeinfo;
+        getLocalTime(&timeinfo);
+        Serial.print("Updated time: ");
+        Serial.println(asctime(&timeinfo));
+        
+        // Update timestamp for offline data
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        struct tm timeinfo;
-        localtime_r(&tv.tv_sec, &timeinfo);
+        lastUsedTimestamp = ((uint64_t)tv.tv_sec * 1000000000) + ((uint64_t)tv.tv_usec * 1000);
         
-        char timeStr[20];
-        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
-        
-        display.setCursor(0, 40);
-        display.print("Time: ");
-        display.print(timeStr);
+        // Show visual indicator that time was updated
+        for (int i = 0; i < 3; i++) {
+          display.fillRect(120, 0, 8, 8, BLACK);
+          if (i % 2 == 0) {
+            display.fillRect(120, 0, 8, 8, WHITE);
+          }
+          display.display();
+          delay(200);
+        }
       } else {
-        display.print("Time update failed");
+        Serial.println("\nFailed to update time from NTP after reconnection");
       }
-      display.display();
-      delay(1000);
       
+      // Force update the combined display with new time
+      if (currentMode == 1 && css811DataReady && mics6814DataReady) {
+        displayCombinedSensorData(lastCO2, lastTVOC, lastCO, lastNO2);
+      }
+      
+      // Try to sync offline data if we have any
+      int offlineCount = countOfflineRecords();
+      if (offlineCount > 0 && client.connected()) {
+        // Show a small indicator that sync is happening
+        display.fillRect(112, 43, 16, 8, BLACK);
+        display.setCursor(112, 43);
+        display.print("↑");
+        display.display();
+        
+        // Sync data
+        syncOfflineData();
+        
+        // Update count on screen after sync
+        if (currentMode == 1 && css811DataReady && mics6814DataReady) {
+          displayCombinedSensorData(lastCO2, lastTVOC, lastCO, lastNO2);
+        }
+      }
     } else {
+      // WiFi reconnection failed
       Serial.println("\nFailed to reconnect WiFi");
-      display.setCursor(0, 10);
-      display.print("WiFi reconnect failed!");
-      display.display();
-      delay(500);
+      
+      if (currentMode == 1 && css811DataReady && mics6814DataReady) {
+        display.fillRect(31, 33, 20, 8, BLACK);
+        display.setCursor(31, 33);
+        display.print("X");
+        display.display();
+      }
     }
   }
 }
@@ -565,43 +598,47 @@ void reconnectMQTT() {
   }
 }
 
-void monitorMICS() {
+void monitorMICS(bool updateDisplay = true) {
   static unsigned long lastPublishTime = 0;
   unsigned long currentTime = millis();
   float COval, NO2val;
   COval = ppmToUgM3(CO);
   NO2val = ppmToUgM3(NO2);
-  Serial.println("----------------------");
-  Serial.println("MICS6814 Sensor Readings:");
-  
 
-  Serial.print("CO: ");
-  Serial.print(getResistance(CH_RED));
-  Serial.print("/");
-  Serial.print(getBaseResistance(CH_RED));
-  Serial.print(" = ");
-  Serial.print(getCurrentRatio(CH_RED));
-  Serial.print(" => ");  
-  Serial.print(measureMICS(CO));
-  Serial.println(" ppm");
-  Serial.print("CO (ug/m3): ");
-  Serial.println(ppmToUgM3(CO));
-  delay(50);
+  // Save the latest readings to global variables
+  lastCO = COval;
+  lastNO2 = NO2val;
+  mics6814DataReady = true;
 
-  Serial.print("NO2: ");
-  Serial.print(getResistance(CH_OX));
-  Serial.print("/");
-  Serial.print(getBaseResistance(CH_OX));
-  Serial.print(" = ");
-  Serial.print(getCurrentRatio(CH_OX));
-  Serial.print(" => ");  
-  Serial.print(measureMICS(NO2));
-  Serial.println(" ppm");
-  Serial.print("NO2 (ug/m3): ");
-  Serial.println(ppmToUgM3(NO2));
-  Serial.println("----------------------");
-  Serial.println(currentTime);
-  Serial.println(lastPublishTime);
+   // Only log detailed readings if displaying or on publish interval
+  if (updateDisplay || currentTime - lastPublishTime >= 60000) {
+    Serial.println("----------------------");
+    Serial.println("MICS6814 Sensor Readings:");
+    Serial.print("CO: ");
+    Serial.print(getResistance(CH_RED));
+    Serial.print("/");
+    Serial.print(getBaseResistance(CH_RED));
+    Serial.print(" = ");
+    Serial.print(getCurrentRatio(CH_RED));
+    Serial.print(" => ");  
+    Serial.print(measureMICS(CO));
+    Serial.println(" ppm");
+    Serial.print("CO (ug/m3): ");
+    Serial.println(COval);
+    
+    Serial.print("NO2: ");
+    Serial.print(getResistance(CH_OX));
+    Serial.print("/");
+    Serial.print(getBaseResistance(CH_OX));
+    Serial.print(" = ");
+    Serial.print(getCurrentRatio(CH_OX));
+    Serial.print(" => ");  
+    Serial.print(measureMICS(NO2));
+    Serial.println(" ppm");
+    Serial.print("NO2 (ug/m3): ");
+    Serial.println(NO2val);
+    Serial.println("----------------------");
+  }
   if(currentTime - lastPublishTime >= 60000) {
     char payload[256];
     snprintf(payload, sizeof(payload), "emission,device_id=%s CO=%.2f,NO2=%.2f", DEVICE_NAME, COval, NO2val);
@@ -629,30 +666,16 @@ void monitorMICS() {
     }
   }
 
-  if(mode == 2) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(20, 0);
-    display.print("Air Quality");
-
-    display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.print("CO:");
-    display.print(COval);
-    display.setTextSize(1);
-    display.print(" ug/m3");
-
-    display.setTextSize(2);
-    display.setCursor(0, 45);
-    display.print("NO2:");
-    display.print(NO2val);
-    display.setTextSize(1);
-    display.print(" ug/m3");
-    display.display();
+    // Combined display: check if both sensors have data and it's time to update
+  if(updateDisplay && mode == 1 && mics6814DataReady && css811DataReady) {
+    if (millis() - lastCombinedDisplayUpdate > 1000) { // Update display once per second
+      displayCombinedSensorData(lastCO2, lastTVOC, lastCO, lastNO2);
+      lastCombinedDisplayUpdate = millis();
+    }
   }
 }
 
-void monitorCSS811() {
+void monitorCSS811(bool updateDisplay = true) {
   static unsigned long lastPublishTime = 0;
   unsigned long currentTime = millis();
   float CO2val, TVOCval;
@@ -660,15 +683,24 @@ void monitorCSS811() {
       if(!ccs.readData()){
         CO2val = ccs.geteCO2();
         TVOCval = ccs.getTVOC();
-        Serial.println("----------------------");
-        Serial.println("CCS811 Sensor Readings:");
-        Serial.print("CO2: ");
-        Serial.print(CO2val);
-        Serial.println(" ppm");
-        Serial.print("TVOC: ");
-        Serial.print(TVOCval);
-        Serial.println(" ppb");
-        Serial.println("----------------------");
+
+        // Save the latest readings to global variables
+        lastCO2 = CO2val;
+        lastTVOC = TVOCval;
+        css811DataReady = true;
+
+        // Only log detailed readings if displaying or on publish interval
+        if (updateDisplay || currentTime - lastPublishTime >= 60000) {
+          Serial.println("----------------------");
+          Serial.println("CCS811 Sensor Readings:");
+          Serial.print("CO2: ");
+          Serial.print(CO2val);
+          Serial.println(" ppm");
+          Serial.print("TVOC: ");
+          Serial.print(TVOCval);
+          Serial.println(" ppb");
+          Serial.println("----------------------");
+        }
 
         if(currentTime - lastPublishTime >= 60000) {
           // Publish to MQTT
@@ -696,30 +728,19 @@ void monitorCSS811() {
           }
         }
 
-        if(mode == 1) {
-          display.clearDisplay();
-          display.setTextSize(1);
-          display.setCursor(20, 0);
-          display.print("Air Quality");
-
-          display.setTextSize(2);
-          display.setCursor(0, 20);
-          display.print("CO2: ");
-          display.print(CO2val);
-          display.setTextSize(1);
-          display.print(" ppm");
-
-          display.setTextSize(2);
-          display.setCursor(0, 45);
-          display.print("TVOC: ");
-          display.print(TVOCval);
-          display.display();
+        // Combined display: check if both sensors have data and it's time to update
+        if(updateDisplay && mode == 1 && mics6814DataReady && css811DataReady) {
+          if (millis() - lastCombinedDisplayUpdate > 1000) { // Update display once per second
+            displayCombinedSensorData(lastCO2, lastTVOC, lastCO, lastNO2);
+            lastCombinedDisplayUpdate = millis();
+          }
         }
     
         } else {
-             // Error handling
-        static unsigned long lastErrorTime = 0;
-        if (millis() - lastErrorTime > 5000) { // Only show error every 5 seconds
+          // Error handling
+        if (updateDisplay) {
+          static unsigned long lastErrorTime = 0;
+          if (millis() - lastErrorTime > 5000) { // Only show error every 5 seconds
             lastErrorTime = millis();
             Serial.println("CCS811 read error!");
             
@@ -731,9 +752,251 @@ void monitorCSS811() {
             display.setCursor(0, 20);
             display.print("Retrying...");
             display.display();
+          }
+      } else {
+        // Minimal error logging in background mode
+        static unsigned long lastErrorTime = 0;
+        if (millis() - lastErrorTime > 30000) { // Only log error every 30 seconds
+          lastErrorTime = millis();
+          Serial.println("CCS811 read error (Background mode)!");
         }
+      }
     }
   }
+}
+// Add this function to display offline records info
+void displayOfflineRecords() {
+  int recordCount = countOfflineRecords();
+  size_t totalBytes = SPIFFS.totalBytes();
+  size_t usedBytes = SPIFFS.usedBytes();
+  float usedPercent = 100.0 * usedBytes / totalBytes;
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(13, 0);
+  display.print("Offline Data Status");
+  display.drawLine(0, 9, 128, 9, WHITE);
+  
+  display.setCursor(0, 12);
+  display.print("Records: ");
+  display.print(recordCount);
+  
+  // Show storage usage
+  display.setCursor(0, 22);
+  display.print("Used: ");
+  display.print(usedBytes);
+  display.print("/");
+  display.print(totalBytes);
+  
+  display.setCursor(0, 32);
+  display.print("Percent: ");
+  display.print(usedPercent, 1);
+  display.print("%");
+  
+  // Show storage bar
+  int barWidth = 100;
+  int barHeight = 6;
+  int filledWidth = (usedPercent / 100.0) * barWidth;
+  
+  display.drawRect(12, 42, barWidth, barHeight, WHITE);
+  display.fillRect(12, 42, filledWidth, barHeight, WHITE);
+  
+  // Show the last timestamp if records exist
+  if (recordCount > 0) {
+    uint64_t latestTimestamp = getLatestOfflineTimestamp();
+    
+    if (latestTimestamp > 0) {
+      display.setCursor(0, 52);
+      display.print("Last: ");
+      
+      // Convert timestamp to human readable time
+      time_t seconds = latestTimestamp / 1000000000;
+      struct tm timeinfo;
+      localtime_r(&seconds, &timeinfo);
+      
+      char timeStr[20];
+      strftime(timeStr, sizeof(timeStr), "%m-%d %H:%M:%S", &timeinfo);
+      
+      display.setCursor(35, 52);
+      display.print(timeStr);
+    }
+  }
+  
+  display.display();
+}
+
+// Add this function to create a transition animation when switching modes
+void animateModeTransition(int fromMode, int toMode) {
+  // Save current display buffer
+  display.clearDisplay();
+  
+  // Animation parameters
+  const int steps = 10;
+  const int duration = 300; // Total animation duration in ms
+  const int delayPerStep = duration / steps;
+  
+  // Different animation styles based on direction of mode change
+  if (fromMode < toMode) {
+    // Sliding animation from right to left
+    for (int step = 0; step <= steps; step++) {
+      display.clearDisplay();
+      
+      // Draw mode indicator
+      display.setTextSize(2);
+      display.setCursor(25, 25);
+      
+      // Calculate position for sliding text
+      int pos = map(step, 0, steps, display.width(), 25);
+      
+      display.setCursor(pos, 25);
+      display.print("MODE ");
+      display.print(toMode);
+      
+      display.display();
+      delay(delayPerStep);
+    }
+  } else if (fromMode > toMode) {
+    // Fading/blinking animation
+    for (int step = 0; step <= steps; step++) {
+      display.clearDisplay();
+      
+      // Draw mode indicator with alternating visibility
+      if ((step % 2) == 0 || step > steps-3) {
+        display.setTextSize(2);
+        display.setCursor(25, 25);
+        display.print("MODE ");
+        display.print(toMode);
+      }
+      
+      display.display();
+      delay(delayPerStep);
+    }
+  } else {
+    // Same mode, just visual feedback
+    for (int step = 0; step <= steps/2; step++) {
+      display.clearDisplay();
+      
+      // Pulse effect with size
+      int textSize = (step < steps/4) ? 2 : 1;
+      display.setTextSize(textSize);
+      int yPos = (textSize == 2) ? 25 : 30;
+      
+      // Calculate position to keep text centered
+      int xPos = (textSize == 2) ? 25 : 35;
+      
+      display.setCursor(xPos, yPos);
+      display.print("MODE ");
+      display.print(toMode);
+      
+      display.display();
+      delay(delayPerStep*2);
+    }
+  }
+  
+  // Final mode display
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(25, 25);
+  display.print("MODE ");
+  display.print(toMode);
+  
+  // Add mode description
+  display.setTextSize(1);
+  display.setCursor(20, 50);
+  
+  // Update mode descriptions
+  switch (toMode) {
+    case 1:
+      display.print("Combined Sensors");
+      break;
+    case 2:
+      display.print("System Status");  // Repurpose mode 2 if needed
+      break;
+    case 3:
+      display.print("Offline Data Status");
+      break;
+  }
+  
+  display.display();
+  delay(500); // Show mode for half a second
+}
+
+// Add this new combined monitoring display function
+void displayCombinedSensorData(float CO2val, float TVOCval, float COval, float NO2val) {
+   display.clearDisplay();
+  
+  // Header
+  display.setTextSize(1);
+  display.setCursor(15, 0);
+  display.print("Air Quality Monitor");
+  display.drawLine(0, 8, 128, 8, WHITE);
+  
+  // Left side - first row
+  display.setCursor(0, 11);
+  display.print("CO2:");
+  display.setCursor(26, 11);
+  display.print(CO2val, 0); // No decimal points to save space
+  display.print(" ppm");
+  
+  // Right side - first row
+  display.setCursor(68, 11);
+  display.print("CO:");
+  display.setCursor(86, 11);
+  display.print(COval, 1); // 1 decimal point
+  
+  // Left side - second row
+  display.setCursor(0, 21);
+  display.print("TVOC:");
+  display.setCursor(32, 21);
+  display.print(TVOCval, 0); // No decimal points
+  display.print(" ppb");
+  
+  // Right side - second row
+  display.setCursor(68, 21);
+  display.print("NO2:");
+  display.setCursor(92, 21);
+  display.print(NO2val, 1); // 1 decimal point
+  
+  // Status section
+  display.drawLine(0, 30, 128, 30, WHITE);
+  
+  // Status elements in a more compact layout
+  display.setCursor(0, 33);
+  display.print("WiFi:");
+  display.setCursor(31, 33);
+  display.print(WiFi.status() == WL_CONNECTED ? "OK" : "X");
+  
+  display.setCursor(66, 33);
+  display.print("MQTT:");
+  display.setCursor(97, 33);
+  display.print(client.connected() ? "OK" : "X");
+  
+  // Offline storage bar
+  int offlineCount = countOfflineRecords();
+  display.setCursor(0, 43);
+  display.print("Records:");
+  display.setCursor(48, 43);
+  display.print(offlineCount);
+  
+  // Get and display the current time instead of storage percentage
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  struct tm timeinfo;
+  localtime_r(&tv.tv_sec, &timeinfo);
+  
+  char dateStr[11]; // YYYY-MM-DD
+  char timeStr[9];  // HH:MM:SS
+  
+  strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", &timeinfo);
+  strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+  
+  // Show date and time
+  display.setCursor(0, 53);
+  display.print(dateStr);
+  display.setCursor(65, 53);
+  display.print(timeStr);
+  
+  display.display();
 }
 
 void setup() {
@@ -748,7 +1011,8 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(WHITE);
 
-  // Initialize SPIFFS
+  // Step 1: Initialize SPIFFS
+  display.clearDisplay();
   display.setCursor(0, 0);
   display.print("Initializing SPIFFS...");
   display.display();
@@ -756,39 +1020,35 @@ void setup() {
   display.setCursor(0, 10);
   display.print("SPIFFS initialized!");
   display.display();
-  delay(500);
+  delay(1000);
 
-   // Step 1: Connect to WiFi
+   // Step 2: Connect to WiFi
+  display.clearDisplay();
   display.setCursor(0, 0);
   display.print("Connecting to WiFi...");
   display.display();
   connectToWiFi();
   
-  // Step 2: Initialize time regardless of WiFi status
-  display.setCursor(0, 20);
+  // Step 3: Initialize time
+  display.clearDisplay();
+  display.setCursor(0, 0);
   if (WiFi.status() == WL_CONNECTED) {
-    display.setCursor(0, 10);
     display.print("WiFi connected!");
-    display.display();
-    delay(500);
-    
+    display.setCursor(0, 10);
     display.print("Setting up time via NTP...");
   } else {
-    display.setCursor(0, 10);
     display.print("WiFi not connected!");
-    display.display();
-    delay(500);
-    
-    display.print("Setting up time from local data...");
+    display.setCursor(0, 10);
+    display.print("Setting up local time...");
   }
   display.display();
   
   // Always call initTime() - it will handle both WiFi and non-WiFi cases
   initTime();
 
-  // Check if time was initialized successfully
+  // Show time status
+  display.setCursor(0, 20);
   if (timeInitialized) {
-    display.setCursor(0, 30);
     display.print("Time setup done!");
     
     // Get timestamp and display its source
@@ -800,16 +1060,13 @@ void setup() {
     char timeStr[20];
     strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
     
-    display.setCursor(0, 40);
+    display.setCursor(0, 30);
     display.print("Time: ");
     display.print(timeStr);
     
-    display.setCursor(0, 50);
-    if (WiFi.status() == WL_CONNECTED) {
-      display.print("Source: NTP");
-    } else {
-      display.print("Source: Offline data");
-    }
+    display.setCursor(0, 40);
+    display.print("Source: ");
+    display.print(WiFi.status() == WL_CONNECTED ? "NTP" : "Offline");
   } else {
     display.setCursor(0, 30);
     display.print("No time source available");
@@ -817,73 +1074,75 @@ void setup() {
     display.print("Using fallback timestamps");
   }
   display.display();
-  delay(1000);
+  delay(1500);
 
-  // Step 2: Initialize CCS811 Sensor
-  display.setCursor(0, 20);
+  // Step 4: Initialize CCS811 Sensor
+  display.clearDisplay();
+  display.setCursor(0, 0);
   display.print("Initializing CCS811...");
   display.display();
   if (!ccs.begin()) {
-    Serial.println("Failed to start sensor! Please check your wiring.");
-    display.setCursor(0, 30);
+    Serial.println("Failed to start sensor!");
+    display.setCursor(0, 10);
     display.print("CCS811 failed!");
     display.display();
     while (1);
   }
   while (!ccs.available());
-  display.setCursor(0, 30);
+  display.setCursor(0, 10);
   display.print("CCS811 initialized!");
   display.display();
-  delay(500);
+  delay(1000);
 
-  // Step 3: Initialize MICS6814 Sensor
-  display.setCursor(0, 40);
+  // Step 5: Initialize MICS6814 Sensor
+  display.clearDisplay();
+  display.setCursor(0, 0);
   display.print("Initializing MICS6814...");
   display.display();
   initMICS(NH3PIN, COPIN, OXPIN, MICS_CALIBRATION_SECONDS, MICS_CALIBRATION_DELTA);
   calibrateMICS();
-  display.setCursor(0, 50);
+  display.setCursor(0, 10);
   display.print("MICS6814 initialized!");
   display.display();
-  delay(500);
+  delay(1000);
 
-  // Step 4: Set up MQTT client
-  display.setCursor(0, 60);
+  // Step 6: Set up MQTT client
+  display.clearDisplay();
+  display.setCursor(0, 0);
   display.print("Setting up MQTT...");
   display.display();
   client.setServer(mqtt_server, MQTT_PORT);
-  display.setCursor(0, 70);
+  display.setCursor(0, 10);
   display.print("MQTT setup done!");
-  display.display();
-  delay(500);
 
-  // Step 5: Set up button pin
   pinMode(BUTTON_PIN, INPUT);
-  display.setCursor(0, 80);
+    // Step 7: Set up button
+  display.setCursor(0, 20);
   display.print("Button setup done!");
-  display.display();
-  delay(500);
 
-  // Show offline records if any
+  // Show offline records count if any
   int offlineCount = countOfflineRecords();
   if (offlineCount > 0) {
-    display.setCursor(0, 90);
+    display.setCursor(0, 30);
     display.print("Offline records: ");
     display.print(offlineCount);
-    display.display();
-    delay(1000);
   }
-
-  // Clear display after setup
-  display.clearDisplay();
-  display.setCursor(25, 15);
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.println("CCS811 Sensor");
-  display.setCursor(25, 35);
-  display.setTextSize(1);
-  display.print("Initializing");
   display.display();
+  delay(1500);
+
+  // Show startup complete screen
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(15, 10);
+  display.print("System Ready");
+  display.setCursor(20, 25);
+  display.print("Air Quality");
+  display.setCursor(28, 35);
+  display.print("Monitor");
+  display.setCursor(15, 50);
+  display.print("Starting...");
+  display.display();
+  delay(1000);
 }
 
 void loop() {
@@ -891,6 +1150,7 @@ void loop() {
   static bool buttonPressed = false;
   static unsigned long lastPublishTime = 0;
   static unsigned long lastSyncAttempt = 0;
+  static unsigned long modeChangeTime = 0;
 
   int buttonState = digitalRead(BUTTON_PIN);
   if (buttonState == LOW) {
@@ -898,14 +1158,45 @@ void loop() {
       buttonPressed = true;
       buttonPressStartTime = millis();
     } else {
-      if (millis() - buttonPressStartTime >= 1000) {
-        mode = 2;
+      unsigned long pressDuration = millis() - buttonPressStartTime;
+      
+      // Short press (0.5-1 second) - switch between mode 1 and 2
+      if (pressDuration >= 500 && pressDuration < 1000) {
+        int newMode = mode;
+        
+        if (mode == 1) {
+          newMode = 3;  // Go directly to offline data status
+        } else if (mode == 3) {
+          newMode = 1;  // Back to combined sensor display
+        }
+        
+        // If mode is changing, show animation
+        if (newMode != mode) {
+          animateModeTransition(mode, newMode);
+          mode = newMode;
+          modeChangeTime = millis();
+        }
+        
+        buttonPressed = false; // Reset the button pressed state
+      } else if (pressDuration >= 1000 && pressDuration < 3000) {
+        if (mode != 3) {
+          animateModeTransition(mode, 3);
+          mode = 3;
+          modeChangeTime = millis();
+        }
         buttonPressed = false; // Reset the button pressed state
       }
     }
   } else {
     buttonPressed = false;
   }
+
+  // Auto-return from mode 3 to mode 1 after 10 seconds
+  if (mode == 3 && millis() - modeChangeTime > 10000) {
+    animateModeTransition(3, 1);
+    mode = 1;
+  }
+
   // Check and reconnect MQTT if needed
   if(!client.connected() && WiFi.status() == WL_CONNECTED) {
     reconnectMQTT();
@@ -941,9 +1232,21 @@ void loop() {
   
   client.loop();
 
-  monitorMICS();
-  monitorCSS811();
-  delay(1000);
+    // Always monitor sensors for data collection
+  // but only update display in modes 1 and 2
+  bool updateDisplay = (mode == 1 || mode == 2);
+  monitorMICS(updateDisplay);
+  monitorCSS811(updateDisplay);
+  // Display based on current mode
+  if (mode == 3) {
+    // Mode 3: Display offline records info
+    static unsigned long lastOfflineRecordUpdate = 0;
+    if (millis() - lastOfflineRecordUpdate > 2000) { // Update every 2 seconds
+      lastOfflineRecordUpdate = millis();
+      displayOfflineRecords();
+    }
+  }
+  delay(100);
 }
 
 
