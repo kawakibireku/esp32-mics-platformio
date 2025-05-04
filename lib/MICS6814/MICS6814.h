@@ -13,6 +13,7 @@ enum gas {
 };
 typedef enum gas gas_t;
 
+void clearMICSCalibration();
 void initMICS(uint8_t nh3Pin, uint8_t coPin, uint8_t oxPin, uint8_t calibrationSeconds, uint8_t calibrationDelta);
 void calibrateMICS();
 void calibrateMICSV2();

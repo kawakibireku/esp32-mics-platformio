@@ -59,32 +59,54 @@ uint64_t getLatestOfflineTimestamp() {
     return 0;
   }
   
-  // Read through all lines to find the latest timestamp
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    
-    if (line.length() > 0) {
-      // Extract timestamp from the end of the line
-      int spacePos = line.lastIndexOf(' ');
-      if (spacePos > 0 && spacePos < line.length() - 1) {
-        String timestampStr = line.substring(spacePos + 1);
-        uint64_t timestamp = strtoull(timestampStr.c_str(), NULL, 10);
-        
-        if (timestamp > latestTimestamp) {
-          latestTimestamp = timestamp;
-        }
-      }
+  // Get file size
+  size_t fileSize = file.size();
+  
+  if (fileSize == 0) {
+    Serial.println("Offline data file is empty");
+    file.close();
+    return 0;
+  }
+  
+  // Strategy: Find the last newline character and read from there
+  // Start from the end and read backwards until we find a newline
+  long position = fileSize - 2; // Start before the possible last newline
+  bool foundNewline = false;
+  
+  // Look for the last newline character
+  while (position >= 0 && !foundNewline) {
+    file.seek(position);
+    char c = file.read();
+    if (c == '\n') {
+      foundNewline = true;
+    } else {
+      position--;
     }
   }
   
+  // Position now points to the last newline (or -1 if no newline was found)
+  // Move to the next character after the newline (or start of file if no newline)
+  file.seek(position + 1);
+  
+  // Read the last line
+  String lastLine = file.readStringUntil('\n');
   file.close();
   
-  if (latestTimestamp > 0) {
-    Serial.print("Latest offline timestamp found: ");
-    Serial.println(String((uint32_t)(latestTimestamp / 1000000000)) + "." + String((uint32_t)(latestTimestamp % 1000000000)));
+  // Process the last line
+  if (lastLine.length() > 0) {
+    // Extract timestamp from the end of the line
+    int spacePos = lastLine.lastIndexOf(' ');
+    if (spacePos > 0 && spacePos < lastLine.length() - 1) {
+      String timestampStr = lastLine.substring(spacePos + 1);
+      latestTimestamp = strtoull(timestampStr.c_str(), NULL, 10);
+      
+      Serial.print("Latest offline timestamp (last line): ");
+      Serial.println(String((uint32_t)(latestTimestamp / 1000000000)) + "." + String((uint32_t)(latestTimestamp % 1000000000)));
+    } else {
+      Serial.println("No timestamp found in last line");
+    }
   } else {
-    Serial.println("No valid timestamp found in offline data");
+    Serial.println("Last line is empty");
   }
   
   return latestTimestamp;
@@ -109,6 +131,65 @@ void initSPIFFS() {
     display.display();
     delay(2000);
   }
+}
+
+// Function to clear offline data with visual feedback
+void clearOfflineData() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(10, 0);
+  display.print("Clearing Offline Data");
+  display.drawLine(0, 9, 128, 9, WHITE);
+  display.display();
+  
+  // First check if the file exists
+  if (!SPIFFS.exists(OFFLINE_DATA_FILE)) {
+    display.setCursor(0, 20);
+    display.print("No offline data to clear!");
+    display.display();
+    delay(2000);
+    return;
+  }
+  
+  // Count records before deletion for feedback
+  int recordCount = countOfflineRecords();
+  
+  display.setCursor(0, 20);
+  display.printf("Records to clear: %d", recordCount);
+  display.display();
+  
+  // Animation for deletion process
+  display.setCursor(0, 30);
+  display.print("Progress: ");
+  display.drawRect(0, 40, 128, 10, WHITE);
+  display.display();
+  
+  // Simulate progress with animation
+  for (int i = 0; i <= 100; i += 10) {
+    int barWidth = (i * 126) / 100;
+    display.fillRect(2, 42, barWidth, 6, WHITE);
+    display.setCursor(60, 30);
+    display.printf("%d%%", i);
+    display.display();
+    delay(50);
+  }
+  
+  // Actually delete the file
+  bool success = SPIFFS.remove(OFFLINE_DATA_FILE);
+  
+  display.setCursor(0, 52);
+  if (success) {
+    display.print("Successfully cleared data!");
+    Serial.println("Offline data cleared successfully");
+  } else {
+    display.print("Failed to clear data!");
+    Serial.println("Failed to clear offline data");
+  }
+  display.display();
+  delay(2000);
+  
+  // Report new storage status
+  reportSPIFFSSpace();
 }
 
 // Function to check and report SPIFFS space usage
@@ -326,11 +407,21 @@ int countOfflineRecords() {
   }
   
   int lineCount = 0;
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    if (line.length() > 0) {
-      lineCount++;
+  const size_t bufSize = 512;  // Process 512 bytes at a time
+  char buf[bufSize];
+  size_t bytesRead;
+  
+  while ((bytesRead = file.read((uint8_t*)buf, bufSize)) > 0) {
+    for (size_t i = 0; i < bytesRead; i++) {
+      if (buf[i] == '\n') {
+        lineCount++;
+      }
     }
+  }
+  
+  // Check if the file doesn't end with a newline but has content
+  if (file.size() > 0 && file.peek() != -1) {
+    lineCount++;
   }
   
   file.close();
@@ -362,33 +453,105 @@ void syncOfflineData() {
   
   int syncedCount = 0;
   int failedCount = 0;
+  int totalRecords = countOfflineRecords();
+  size_t fileSize = file.size();
+  size_t processedBytes = 0;
   
-  Serial.println("Syncing offline data...");
+  Serial.printf("Syncing %d offline records...\n", totalRecords);
+  
+  // Show sync progress screen if in mode 3 or 1
+  if (mode == 3 || mode == 1) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(15, 0);
+    display.print("Syncing Offline Data");
+    display.drawLine(0, 9, 128, 9, WHITE);
+    display.setCursor(0, 12);
+    display.printf("Records: %d", totalRecords);
+    display.setCursor(0, 22);
+    display.print("Progress: 0%");
+    display.drawRect(0, 32, 128, 10, WHITE);
+    display.display();
+  }
   
   // Process each line in the file
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
+int recordNum = 0;
+while (file.available()) {
+  String line = file.readStringUntil('\n');
+  line.trim(); // Remove any whitespace including leading/trailing spaces
+  
+  // Only process non-empty lines
+  if (line.length() > 0) {
+    recordNum++;
+    processedBytes = file.position();
     
-    if (line.length() > 0) {
-      // Try to publish to MQTT
-       // Get the entire line including the timestamp
-      // The format should be: emission,device_id=ECG-3 CO=4.95,NO2=2.67 1745397212646000000
-     
+    // Update progress bar every few records
+    if (recordNum % 5 == 0 || recordNum == totalRecords) {
+      int progressPercent = (processedBytes * 100) / fileSize;
+      int progressBarWidth = (progressPercent * 126) / 100;
+      
+      if (mode == 3 || mode == 1) {
+        display.fillRect(0, 22, 128, 8, BLACK);
+        display.setCursor(0, 22);
+        display.printf("Progress: %d%%", progressPercent);
+        display.fillRect(2, 34, progressBarWidth, 6, WHITE);
+        
+        display.setCursor(0, 44);
+        display.printf("Synced: %d, Failed: %d", syncedCount, failedCount);
+        display.display();
+      }
+    }
+    
+          // Check MQTT connection before publishing
+    if (!client.connected() && WiFi.isConnected()) {
+      Serial.println("MQTT disconnected, attempting to reconnect...");
+      reconnectMQTT();
+      
+      // If reconnection failed, continue to next record but save this one
+      if (!client.connected()) {
+        failedCount++;
+        tempFile.println(line);
+        Serial.println("MQTT reconnection failed, saved record for later");
+        continue;
+      }
+    }
+    // Try to publish to MQTT with retry logic
+    bool publishSuccess = false;
+    int retryCount = 0;
+    const int maxRetries = 2; // Number of retry attempts
+    
+    
+    while (!publishSuccess && retryCount < maxRetries) {
       if (client.publish("egcs/egc-1", line.c_str())) {
         syncedCount++;
         Serial.print("Synced: ");
         Serial.println(line);
-        delay(100); // Small delay to avoid flooding the broker
+        publishSuccess = true;
       } else {
-        failedCount++;
-        tempFile.println(line);  // Keep the record for next attempt
-        Serial.print("Failed to sync: ");
-        Serial.println(line);
+        retryCount++;
+        if (retryCount < maxRetries) {
+          Serial.print("Retry attempt ");
+          
+          Serial.print(retryCount);
+          Serial.println(" for MQTT publish...");
+          delay(500); // Wait a bit before retrying
+        }
       }
     }
+    
+    // If all publishing attempts failed, save to temp file
+    if (!publishSuccess) {
+      failedCount++;
+      tempFile.println(line);  // Keep the record for next attempt
+      Serial.print("Failed to sync after retries: ");
+      Serial.println(line);
+    }
+    
+    // Small delay to avoid flooding the broker
+    delay(10);
   }
-  
+  }
+
   file.close();
   tempFile.close();
   
@@ -399,6 +562,20 @@ void syncOfflineData() {
   } else {
     SPIFFS.remove(OFFLINE_DATA_FILE); // All records synced, remove the file
     SPIFFS.remove("/temp.txt");
+  }
+  
+  // Final progress update
+  if (mode == 3 || mode == 1) {
+    display.fillRect(0, 22, 128, 8, BLACK);
+    display.setCursor(0, 22);
+    display.print("Progress: 100%");
+    display.fillRect(2, 34, 126, 6, WHITE);
+    display.setCursor(0, 44);
+    display.printf("Synced: %d, Failed: %d", syncedCount, failedCount);
+    display.setCursor(0, 54);
+    display.print("Sync complete!");
+    display.display();
+    delay(1000); // Show final result for a second
   }
   
   Serial.printf("Sync complete. Synced: %d, Failed: %d\n", syncedCount, failedCount);
@@ -1000,6 +1177,7 @@ void displayCombinedSensorData(float CO2val, float TVOCval, float COval, float N
 }
 
 void setup() {
+  
   Serial.begin(115200);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Initialize with the I2C addr 0x3C (128x64)
   delay(500);
@@ -1010,7 +1188,7 @@ void setup() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(WHITE);
-
+  // clearOfflineData();
   // Step 1: Initialize SPIFFS
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -1100,13 +1278,14 @@ void setup() {
   display.print("Initializing MICS6814...");
   display.display();
   initMICS(NH3PIN, COPIN, OXPIN, MICS_CALIBRATION_SECONDS, MICS_CALIBRATION_DELTA);
+  // clearMICSCalibration();
   calibrateMICS();
   display.setCursor(0, 10);
   display.print("MICS6814 initialized!");
   display.display();
   delay(1000);
 
-  // Step 6: Set up MQTT client
+  // // Step 6: Set up MQTT client
   display.clearDisplay();
   display.setCursor(0, 0);
   display.print("Setting up MQTT...");

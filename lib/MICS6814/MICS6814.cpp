@@ -18,6 +18,32 @@ uint8_t OXPIN;
 uint8_t MICS_CALIBRATION_SECONDS;
 uint8_t MICS_CALIBRATION_DELTA;
 
+/**
+ * Clear sensor calibration data from EEPROM
+ * This resets all stored base resistances and the calibration flag
+ */
+void clearMICSCalibration() {
+  // Reset calibration flag
+  uint8_t flag = 0;
+  EEPROM.put(EEPROM_CALIBRATION_FLAG_ADDR, flag);
+  
+  // Reset base resistance values to 0
+  uint16_t zeroValue = 0;
+  EEPROM.put(EEPROM_NH3_BASE_ADDR, zeroValue);
+  EEPROM.put(EEPROM_RED_BASE_ADDR, zeroValue);
+  EEPROM.put(EEPROM_OX_BASE_ADDR, zeroValue);
+  
+  // Commit changes to EEPROM
+  EEPROM.commit();
+  
+  // Reset global variables
+  NH3baseR = 0;
+  REDbaseR = 0;
+  OXbaseR = 0;
+  
+  Serial.println("MICS6814 calibration data cleared from EEPROM");
+}
+
 void saveBaseResistancesToEEPROM() {
     EEPROM.put(EEPROM_NH3_BASE_ADDR, NH3baseR);
     EEPROM.put(EEPROM_RED_BASE_ADDR, REDbaseR);
